@@ -4,13 +4,12 @@ import pandas as pd
 import re
 from time import sleep 
 import concurrent.futures
+import tkinter as tk
+from tkinter import filedialog
+import sys
+import os
 
 # --- Configuration ---
-# 🚨 IMPORTANT: Replace with your actual file path and column name
-FILE_PATH = r'C:\Users\Nandu VK\Downloads\SchoolCode.xlsx' 
-COLUMN_NAME = 'schoolcode'                               
-# ---------------------
-
 BASE_URL = "https://sametham.kite.kerala.gov.in/" 
 MAX_WORKERS = 8 
 
@@ -20,6 +19,7 @@ NEW_ID_COLUMNS = [
     'School Name', 
     'School Type', 
     'School Level', 
+    'Sub District',  # Added as requested
     'Panchayat/Municipality/Corporation', 
     'Assembly Constituency', 
     'Revenue District', 
@@ -121,6 +121,7 @@ def fetch_and_process_school(school_code):
         ('School Name', 'School Name', 'Name Not Found'),
         ('School Type', 'School Type', 'N/A'),
         ('School Level', 'School Level', 'N/A'), 
+        ('Sub District', 'Sub District', 'N/A'), # Added Sub District
         ('Panchayat/ Municipality/ Corporation', 'Panchayat/Municipality/Corporation', 'N/A'), 
         ('Assembly Constituency', 'Assembly Constituency', 'N/A'),
         ('Revenue District', 'Revenue District', 'N/A'),
@@ -323,19 +324,54 @@ def scrape_with_retry(school_code, max_retries=3, initial_delay=3):
 
 # --- B. Execution and Saving (Main Logic - Finalization) ---
 
-# 1. LIST OF CODES - Read from Excel File 
+# 1. LIST OF CODES - Read from Excel File (UPDATED: GUI selection)
 tvm_school_codes = []
 if __name__ == "__main__":
+    
+    # --- NEW: File Selection GUI ---
+    root = tk.Tk()
+    root.withdraw() # Hide the main window
+    
+    print("📂 Please select the Excel file containing School Codes...", flush=True)
+    file_path = filedialog.askopenfilename(
+        title="Select School Code Excel File",
+        filetypes=[("Excel Files", "*.xlsx *.xls")]
+    )
+    
+    if not file_path:
+        print("❌ No file selected. Exiting.")
+        sys.exit()
+    
+    print(f"✅ File selected: {file_path}", flush=True)
+
     try:
         print("Reading school codes from Excel...", flush=True)
-        # Assuming the input file is an XLSX as per the previous traceback file path
-        df = pd.read_excel(FILE_PATH) 
-        tvm_school_codes = df[COLUMN_NAME].astype(str).tolist()
+        df = pd.read_excel(file_path) 
+        
+        # --- NEW: Smart Column Detection ---
+        possible_cols = ['schoolcode', 'school code', 'code', 'school_code', 's_code']
+        found_col = None
+        
+        # 1. Check strict lowercase match
+        for col in df.columns:
+            if str(col).lower().strip() in possible_cols:
+                found_col = col
+                break
+        
+        # 2. If found, use it. If not, ask user.
+        if found_col:
+            print(f"✅ Found school code column: '{found_col}'", flush=True)
+            tvm_school_codes = df[found_col].astype(str).tolist()
+        else:
+            print("⚠️ Could not automatically find 'schoolcode' column.")
+            print(f"Available columns: {list(df.columns)}")
+            found_col = input("👉 Please type the exact column name for School Codes: ").strip()
+            tvm_school_codes = df[found_col].astype(str).tolist()
+
         print(f"Total codes extracted: {len(tvm_school_codes)} schools.", flush=True)
+        
     except FileNotFoundError:
-        print(f"❌ Error: File not found at {FILE_PATH}.", flush=True)
-    except KeyError:
-        print(f"❌ Error: Column '{COLUMN_NAME}' not found. Check your Excel file header.", flush=True)
+        print(f"❌ Error: File not found at {file_path}.", flush=True)
     except Exception as e:
         print(f"❌ An unexpected error occurred while reading Excel: {e}", flush=True)
 
@@ -438,13 +474,15 @@ if __name__ == "__main__":
             # Convert to numeric, forcing conversion (errors='coerce' ensures pandas handles mixed types gracefully), then convert to non-nullable integer
             final_output_df[col] = pd.to_numeric(final_output_df[col], errors='coerce').astype(int) 
         
-        # Order the final columns (Initial ID, Class Totals, HSS Streams, VHSE, Final ID, Error)
-        all_cols = ID_INITIAL + class_cols + HSS_COLUMNS + VHSE_COLUMNS + ID_FINAL + ['Error']
+        # Order the final columns (Initial ID, Sub District, Rest of ID, Class Totals, HSS Streams, VHSE, Final ID, Error)
+        # Note: We prioritize "Sub District" near "School Level" or where it fits in NEW_ID_COLUMNS
+        all_cols = ID_INITIAL + ['Sub District'] + [c for c in ID_FINAL if c != 'Sub District'] + class_cols + HSS_COLUMNS + VHSE_COLUMNS + ['Error']
         
         final_output_df = final_output_df.reindex(columns=all_cols)
         
-        # Save to XLSX
-        OUTPUT_FILENAME = 'TVM_Schoolwise_Total_Strength_Wide_Final.xlsx'
+        # Save to XLSX (Dynamic name based on input)
+        input_filename = os.path.splitext(os.path.basename(file_path))[0]
+        OUTPUT_FILENAME = f'{input_filename}_Scraped_Output.xlsx'
         final_output_df.to_excel(OUTPUT_FILENAME, index=False, engine='openpyxl')
         
         # Print Summary
