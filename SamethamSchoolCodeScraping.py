@@ -5,7 +5,7 @@ import re
 from time import sleep 
 import concurrent.futures
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext, ttk, simpledialog
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 import threading
 import queue
 import os
@@ -14,6 +14,7 @@ import sys
 # --- Configuration ---
 BASE_URL = "https://sametham.kite.kerala.gov.in/" 
 MAX_WORKERS = 8 
+DATA_FILENAME = "school_data.csv" # Ensure your file is named this!
 
 # Identifiers
 NEW_ID_COLUMNS = [
@@ -33,6 +34,17 @@ ALL_HSS_VHSE_COLUMNS = HSS_COLUMNS + VHSE_COLUMNS
 ID_INITIAL = ['School Code', 'School Name', 'School Type', 'School Level']
 ID_FINAL = [col for col in NEW_ID_COLUMNS if col not in ID_INITIAL]
 EXPECTED_DATA_COLUMNS = 16 
+
+# --- Helper: Resource Path for PyInstaller ---
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
 
 # --- Core Scraping Logic (Stateless) ---
 
@@ -201,34 +213,35 @@ class ScraperApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Sametham School Scraper")
-        self.root.geometry("700x550")
+        self.root.geometry("700x600")
         
-        self.file_path = None
         self.log_queue = queue.Queue()
         self.is_scraping = False
+        self.district_vars = {}
+        self.school_df = pd.DataFrame()
+        self.districts_list = []
 
         # Styles
         style = ttk.Style()
         style.configure("TButton", padding=6, font=('Helvetica', 10))
         style.configure("TLabel", font=('Helvetica', 10))
+        style.configure("Header.TLabel", font=('Helvetica', 11, 'bold'))
         
         # --- UI Components ---
         
-        # Frame 1: File Selection
-        frame_top = ttk.LabelFrame(root, text="Step 1: Input", padding=10)
-        frame_top.pack(fill="x", padx=10, pady=5)
+        # Frame 1: District Selection
+        frame_dist = ttk.LabelFrame(root, text="Select Districts", padding=10)
+        frame_dist.pack(fill="x", padx=10, pady=5)
         
-        self.lbl_file = ttk.Label(frame_top, text="No file selected")
-        self.lbl_file.pack(side="left", fill="x", expand=True)
-        
-        btn_browse = ttk.Button(frame_top, text="Browse Excel", command=self.load_file)
-        btn_browse.pack(side="right")
+        self.dist_container = frame_dist # Placeholder for checkboxes
+        self.lbl_loading = ttk.Label(frame_dist, text="Loading school database...", foreground="blue")
+        self.lbl_loading.pack()
 
         # Frame 2: Progress
         frame_progress = ttk.Frame(root, padding=10)
         frame_progress.pack(fill="x", padx=10)
         
-        self.lbl_status = ttk.Label(frame_progress, text="Status: Idle")
+        self.lbl_status = ttk.Label(frame_progress, text="Status: Initializing...")
         self.lbl_status.pack(anchor="w")
         
         self.progress = ttk.Progressbar(frame_progress, orient="horizontal", mode="determinate")
@@ -238,7 +251,7 @@ class ScraperApp:
         frame_log = ttk.LabelFrame(root, text="Activity Log", padding=10)
         frame_log.pack(fill="both", expand=True, padx=10, pady=5)
         
-        self.txt_log = scrolledtext.ScrolledText(frame_log, height=15, state='disabled', font=('Consolas', 9))
+        self.txt_log = scrolledtext.ScrolledText(frame_log, height=12, state='disabled', font=('Consolas', 9))
         self.txt_log.pack(fill="both", expand=True)
 
         # Frame 4: Actions
@@ -248,8 +261,79 @@ class ScraperApp:
         self.btn_start = ttk.Button(frame_actions, text="Start Scraping", command=self.start_scraping_thread, state='disabled')
         self.btn_start.pack(side="right")
 
-        # Start Log Polling
+        # Start Log Polling and Data Loading
         self.root.after(100, self.process_log_queue)
+        self.root.after(500, self.load_database)
+
+    def load_database(self):
+        try:
+            # Locate the data file
+            data_path = resource_path(DATA_FILENAME)
+            self.log(f"📂 Loading database from: {data_path}")
+            
+            if not os.path.exists(data_path):
+                self.log("❌ Error: 'school_data.csv' not found!")
+                messagebox.showerror("Missing Data", f"Could not find {DATA_FILENAME}.\nPlease make sure it is in the same folder.")
+                self.lbl_loading.config(text="Error: Database missing", foreground="red")
+                return
+
+            # Read CSV (or Excel if you change extension)
+            if data_path.endswith('.csv'):
+                self.school_df = pd.read_csv(data_path)
+            else:
+                self.school_df = pd.read_excel(data_path)
+            
+            # Normalize Columns
+            self.school_df.columns = [c.strip() for c in self.school_df.columns]
+            
+            # Verify columns
+            if 'Revenue District' not in self.school_df.columns or 'School Code' not in self.school_df.columns:
+                self.log("❌ Error: Columns 'Revenue District' or 'School Code' missing.")
+                return
+
+            # Extract unique districts
+            self.districts_list = sorted(self.school_df['Revenue District'].dropna().unique().tolist())
+            self.log(f"✅ Database loaded: {len(self.school_df)} schools in {len(self.districts_list)} districts.")
+            
+            # Build UI
+            self.lbl_loading.pack_forget()
+            self.create_district_checkboxes(self.dist_container)
+            self.lbl_status.config(text="Status: Ready")
+            self.btn_start.config(state='normal')
+
+        except Exception as e:
+            self.log(f"❌ Error loading database: {e}")
+            self.lbl_loading.config(text="Error loading data", foreground="red")
+
+    def create_district_checkboxes(self, parent):
+        # Control Buttons
+        btn_frame = ttk.Frame(parent)
+        btn_frame.pack(fill="x", pady=(0, 5))
+        
+        ttk.Button(btn_frame, text="Select All", command=self.select_all).pack(side="left", padx=2)
+        ttk.Button(btn_frame, text="Clear All", command=self.clear_all).pack(side="left", padx=2)
+        
+        # Checkboxes Grid
+        grid_frame = ttk.Frame(parent)
+        grid_frame.pack(fill="x")
+        
+        for i, dist in enumerate(self.districts_list):
+            var = tk.BooleanVar(value=False)
+            self.district_vars[dist] = var
+            cb = ttk.Checkbutton(grid_frame, text=dist, variable=var)
+            cb.grid(row=i // 3, column=i % 3, sticky="w", padx=10, pady=2) # 3 columns
+            
+        grid_frame.columnconfigure(0, weight=1)
+        grid_frame.columnconfigure(1, weight=1)
+        grid_frame.columnconfigure(2, weight=1)
+
+    def select_all(self):
+        for var in self.district_vars.values():
+            var.set(True)
+
+    def clear_all(self):
+        for var in self.district_vars.values():
+            var.set(False)
 
     def log(self, message):
         self.log_queue.put(message)
@@ -263,47 +347,39 @@ class ScraperApp:
             self.txt_log.config(state='disabled')
         self.root.after(100, self.process_log_queue)
 
-    def load_file(self):
-        path = filedialog.askopenfilename(filetypes=[("Excel Files", "*.xlsx *.xls")])
-        if path:
-            self.file_path = path
-            self.lbl_file.config(text=os.path.basename(path))
-            self.btn_start.config(state='normal')
-            self.log(f"📂 Loaded: {path}")
-
     def start_scraping_thread(self):
         if self.is_scraping: return
+        
+        # 1. Collect Selected Districts
+        selected_districts = [dist for dist, var in self.district_vars.items() if var.get()]
+        
+        if not selected_districts:
+            messagebox.showwarning("No Selection", "Please select at least one district.")
+            return
+            
         self.is_scraping = True
         self.btn_start.config(state='disabled')
-        thread = threading.Thread(target=self.run_scraping_logic)
+        thread = threading.Thread(target=self.run_scraping_logic, args=(selected_districts,))
         thread.start()
 
-    def run_scraping_logic(self):
+    def run_scraping_logic(self, selected_districts):
         try:
-            self.log("⏳ Reading Excel file...")
-            df = pd.read_excel(self.file_path)
+            self.log(f"🔎 Filtering schools for: {', '.join(selected_districts)}...")
             
-            # Smart Column Detection
-            possible_cols = ['schoolcode', 'school code', 'code', 'school_code', 's_code']
-            found_col = None
-            for col in df.columns:
-                if str(col).lower().strip() in possible_cols:
-                    found_col = col
-                    break
+            # Filter Dataframe
+            filtered_df = self.school_df[self.school_df['Revenue District'].isin(selected_districts)]
+            school_codes = filtered_df['School Code'].astype(str).tolist()
             
-            if not found_col:
-                found_col = simpledialog.askstring("Column Required", "Could not auto-detect 'School Code' column.\nPlease type the column name:")
-                if not found_col or found_col not in df.columns:
-                    self.log("❌ Error: Invalid column name or cancelled.")
-                    self.is_scraping = False
-                    self.btn_start.config(state='normal')
-                    return
-
-            school_codes = df[found_col].astype(str).tolist()
             total_schools = len(school_codes)
-            self.log(f"🚀 Found {total_schools} schools. Starting scraper...")
             
-            # Setup Progress Bar
+            if total_schools == 0:
+                self.log("❌ No schools found for selected districts.")
+                self.is_scraping = False
+                self.btn_start.config(state='normal')
+                return
+
+            self.log(f"🚀 Starting scraper for {total_schools} total schools...")
+            
             self.progress['maximum'] = total_schools
             self.progress['value'] = 0
 
@@ -319,7 +395,6 @@ class ScraperApp:
                         data = future.result()
                         results.append(data)
                         
-                        # Logging Status
                         err = data.iloc[0].get('Error')
                         if pd.isna(err) or not err:
                             self.log(f"✅ Scraped: {code}")
@@ -333,11 +408,9 @@ class ScraperApp:
                     self.progress['value'] = completed_count
                     self.lbl_status.config(text=f"Status: Processing {completed_count}/{total_schools}")
 
-            # Processing Results
             self.log("📊 Processing data table...")
             final_df = pd.concat(results, ignore_index=True)
             
-            # Pivot Logic (Same as before)
             if 'Class' in final_df.columns:
                 df_success = final_df[final_df['Class'].notna()].drop_duplicates(subset=NEW_ID_COLUMNS + ['Class']).copy()
             else:
@@ -355,11 +428,9 @@ class ScraperApp:
             else:
                 df_wide = pd.DataFrame(columns=NEW_ID_COLUMNS + ALL_HSS_VHSE_COLUMNS)
 
-            # Merging
             error_cols = list(set(NEW_ID_COLUMNS + ALL_HSS_VHSE_COLUMNS + ['Error']) & set(df_errors.columns))
             final_output = df_wide.merge(df_errors[error_cols], on='School Code', how='outer', suffixes=('_data', '_error'))
 
-            # Coalesce
             for col in NEW_ID_COLUMNS + ALL_HSS_VHSE_COLUMNS:
                 c_d, c_e = col + '_data', col + '_error'
                 if c_d in final_output.columns and c_e in final_output.columns:
@@ -370,7 +441,6 @@ class ScraperApp:
             final_output['Error'] = final_output.get('Error_error', pd.NA).fillna(final_output.get('Error_data', pd.NA)) if 'Error_error' in final_output else final_output.get('Error_data', pd.NA)
             final_output.drop(columns=[c for c in final_output.columns if c.endswith(('_data', '_error'))], inplace=True, errors='ignore')
 
-            # Sorting & Numeric Conversion
             class_cols = [c for c in final_output.columns if c.startswith('Class') and c.endswith('Total')]
             class_cols.sort(key=lambda x: int(re.search(r'Class (\d+) Total', x).group(1)))
             
@@ -381,7 +451,6 @@ class ScraperApp:
             final_cols_ordered = ID_INITIAL + ['Sub District'] + [c for c in ID_FINAL if c != 'Sub District'] + class_cols + HSS_COLUMNS + VHSE_COLUMNS + ['Error']
             final_output = final_output.reindex(columns=final_cols_ordered)
 
-            # Trigger Save on Main Thread
             self.root.after(0, lambda: self.save_file(final_output))
 
         except Exception as e:
@@ -392,9 +461,7 @@ class ScraperApp:
     def save_file(self, df):
         self.lbl_status.config(text="Status: Finished. Waiting for save...")
         default_name = "Output.xlsx"
-        if self.file_path:
-            default_name = os.path.splitext(os.path.basename(self.file_path))[0] + "_Scraped.xlsx"
-
+        
         save_path = filedialog.asksaveasfilename(
             title="Save Output",
             defaultextension=".xlsx",
