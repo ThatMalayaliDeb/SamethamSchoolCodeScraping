@@ -19,7 +19,7 @@ NEW_ID_COLUMNS = [
     'School Name', 
     'School Type', 
     'School Level', 
-    'Sub District',  # Added as requested
+    'Sub District', 
     'Panchayat/Municipality/Corporation', 
     'Assembly Constituency', 
     'Revenue District', 
@@ -121,7 +121,7 @@ def fetch_and_process_school(school_code):
         ('School Name', 'School Name', 'Name Not Found'),
         ('School Type', 'School Type', 'N/A'),
         ('School Level', 'School Level', 'N/A'), 
-        ('Sub District', 'Sub District', 'N/A'), # Added Sub District
+        ('Sub District', 'Sub District', 'N/A'), 
         ('Panchayat/ Municipality/ Corporation', 'Panchayat/Municipality/Corporation', 'N/A'), 
         ('Assembly Constituency', 'Assembly Constituency', 'N/A'),
         ('Revenue District', 'Revenue District', 'N/A'),
@@ -324,11 +324,11 @@ def scrape_with_retry(school_code, max_retries=3, initial_delay=3):
 
 # --- B. Execution and Saving (Main Logic - Finalization) ---
 
-# 1. LIST OF CODES - Read from Excel File (UPDATED: GUI selection)
+# 1. LIST OF CODES - Read from Excel File
 tvm_school_codes = []
 if __name__ == "__main__":
     
-    # --- NEW: File Selection GUI ---
+    # --- File Selection GUI ---
     root = tk.Tk()
     root.withdraw() # Hide the main window
     
@@ -348,7 +348,7 @@ if __name__ == "__main__":
         print("Reading school codes from Excel...", flush=True)
         df = pd.read_excel(file_path) 
         
-        # --- NEW: Smart Column Detection ---
+        # --- Smart Column Detection ---
         possible_cols = ['schoolcode', 'school code', 'code', 'school_code', 's_code']
         found_col = None
         
@@ -469,20 +469,33 @@ if __name__ == "__main__":
         # 1. Fill missing values with 0
         final_output_df[NUMERIC_COLUMNS] = final_output_df[NUMERIC_COLUMNS].fillna(0)
         
-        # 2. FIX: Explicitly convert the columns to integer type
+        # 2. Explicitly convert the columns to integer type
         for col in NUMERIC_COLUMNS:
-            # Convert to numeric, forcing conversion (errors='coerce' ensures pandas handles mixed types gracefully), then convert to non-nullable integer
             final_output_df[col] = pd.to_numeric(final_output_df[col], errors='coerce').astype(int) 
         
-        # Order the final columns (Initial ID, Sub District, Rest of ID, Class Totals, HSS Streams, VHSE, Final ID, Error)
-        # Note: We prioritize "Sub District" near "School Level" or where it fits in NEW_ID_COLUMNS
+        # Order the final columns
         all_cols = ID_INITIAL + ['Sub District'] + [c for c in ID_FINAL if c != 'Sub District'] + class_cols + HSS_COLUMNS + VHSE_COLUMNS + ['Error']
         
         final_output_df = final_output_df.reindex(columns=all_cols)
         
-        # Save to XLSX (Dynamic name based on input)
+        # --- SAVE DIALOG (Custom Directory Selection) ---
         input_filename = os.path.splitext(os.path.basename(file_path))[0]
-        OUTPUT_FILENAME = f'{input_filename}_Scraped_Output.xlsx'
+        default_output_name = f'{input_filename}_Scraped_Output.xlsx'
+        
+        print("💾 Please choose where to save the file...", flush=True)
+        save_path = filedialog.asksaveasfilename(
+            title="Save Output File",
+            defaultextension=".xlsx",
+            filetypes=[("Excel Files", "*.xlsx")],
+            initialfile=default_output_name
+        )
+        
+        if save_path:
+            OUTPUT_FILENAME = save_path
+        else:
+            print("⚠️ Save cancelled. Saving to default location to prevent data loss...", flush=True)
+            OUTPUT_FILENAME = default_output_name
+        
         final_output_df.to_excel(OUTPUT_FILENAME, index=False, engine='openpyxl')
         
         # Print Summary
